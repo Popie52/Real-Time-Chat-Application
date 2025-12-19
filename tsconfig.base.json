@@ -1,0 +1,42 @@
+// {
+//     "compilerOptions": {
+//         "target": "es2024",
+//         "module": "esnext",
+//         "moduleResolution": "node16",
+//         "strict": true,
+//         "noImplicitAny": true,
+//         "noUnusedLocals": true,
+//         "noUnusedParameters": true,
+//         "noUncheckedIndexedAccess": true,
+//         "exactOptionalPropertyTypes": true,
+//         "forceConsistentCasingInFileNames": true,
+//         "skipLibCheck": true,
+//         "esModuleInterop": true,
+//         "resolveJsonModule": true,
+//         "baseUrl": ".",
+//         // "ignoreDeprecations": "6.0"
+//     }
+// }
+
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "incremental": true,
+    "sourceMap": true,
+    "strictNullChecks": true,
+    "paths": {
+      "@backend/*": ["./apps/backend/src/*"],
+      "@frontend/*": ["./apps/frontend/src/*"],
+      "@shared/*": ["./packages/shared/src/*"]
+    },
+  },
+  "exclude": ["node_modules", "dist"]
+}
+
+
