@@ -7,6 +7,7 @@ import { ConversationModel } from "../models/conversation.model";
 import { createMessage } from "../services/message.service";
 import { Types } from "mongoose";
 import { ReadStateModel } from "../models/read-state.model";
+import { logger } from "@backend/utils/logger";
 
 export interface SocketContext {
   userId: string;
@@ -15,12 +16,34 @@ export interface SocketContext {
 
 export const createSocketServer = (server: http.Server) => {
   const typingState = new Map<string, NodeJS.Timeout>();
+  const messageBuckets = new Map<string, { count: number; resetAt: number }>();
+  const typingCooldown = new Map<string, number>();
 
   const io = new Server(server, {
     cors: {
       origin: true,
       credentials: true,
     },
+  });
+
+  const connectionAttempts = new Map<string, number[]>();
+
+  io.use((socket, next) => {
+    const sessionId = socket.handshake.auth?.sessionId;
+    if (!sessionId) return next();
+
+    const now = Date.now();
+    const attempts = connectionAttempts.get(sessionId) ?? [];
+
+    const recent = attempts.filter((ts) => now - ts < 60_000);
+    recent.push(now);
+
+    if (recent.length > 5) {
+      return next(new Error("Too many connections"));
+    }
+
+    connectionAttempts.set(sessionId, recent);
+    next();
   });
 
   io.use(async (socket, next) => {
@@ -62,8 +85,12 @@ export const createSocketServer = (server: http.Server) => {
     const ctx = socket.data.auth as SocketContext;
     const { userId } = ctx;
 
-    console.log(
-      `Socket connected: user=${ctx.userId}, session=${ctx.sessionId}`
+    // console.log(
+    //   `Socket connected: user=${ctx.userId}, session=${ctx.sessionId}`
+    // );
+    logger.info(
+      { userId: ctx.userId, sessionId: ctx.sessionId },
+      "Socket connected"
     );
 
     const conversations = await ConversationModel.find({
@@ -74,10 +101,32 @@ export const createSocketServer = (server: http.Server) => {
       socket.join(c._id.toString());
     }
 
+    const MAX_MESSAGES = 20;
+    const WINDOW_MS = 10_000;
+
     socket.on(
       "message:send",
       async (payload: { conversationId: string; content: string }) => {
-        const { userId } = socket.data.auth;
+        const { userId, sessionId } = socket.data.auth;
+        const key = `${userId}:${sessionId}`;
+        const now = Date.now();
+
+        const bucket = messageBuckets.get(key);
+
+        if (!bucket || bucket.resetAt < now) {
+          messageBuckets.set(key, {
+            count: 1,
+            resetAt: now + WINDOW_MS,
+          });
+        } else {
+          if (bucket.count >= MAX_MESSAGES) {
+            return socket.emit("error:rate-limit", {
+              type: "message",
+              retryAfter: bucket.resetAt - now,
+            });
+          }
+          bucket.count++;
+        }
 
         const message = await createMessage({
           conversationId: new Types.ObjectId(payload.conversationId),
@@ -126,6 +175,14 @@ export const createSocketServer = (server: http.Server) => {
     socket.on("typing:start", (payload: { conversationId: string }) => {
       const { userId } = socket.data.auth;
       const key = `${payload.conversationId}:${userId}`;
+      //   const key = `${payload.conversationId}:${userId}`;
+      const now = Date.now();
+
+      if (typingCooldown.get(key) && now - typingCooldown.get(key)! < 1000) {
+        return;
+      }
+
+      typingCooldown.set(key, now);
 
       if (!typingState.has(key)) {
         socket.to(payload.conversationId).emit("typing:update", {
@@ -183,6 +240,9 @@ export const createSocketServer = (server: http.Server) => {
           });
         }
       }
+      const { sessionId } = socket.data.auth;
+      messageBuckets.delete(`${userId}:${sessionId}`);
+
       console.log(
         `Socket disconnected: user=${ctx.userId}, session=${ctx.sessionId}`
       );
