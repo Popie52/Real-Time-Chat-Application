@@ -3,7 +3,7 @@ import { Schema, Types, model } from "mongoose";
 export interface Conversation {
   _id: Types.ObjectId;
   type: "dm" | "group";
-  participantsIds: Types.ObjectId[];
+  participantIds: Types.ObjectId[];
   lastSequence: number;
   createdAt: Date;
 }
@@ -15,7 +15,7 @@ const conversationSchema = new Schema<Conversation>(
       enum: ["dm", "group"],
       required: true,
     },
-    participantsIds: {
+    participantIds: {
       type: [Schema.Types.ObjectId],
       required: true,
       index: true,

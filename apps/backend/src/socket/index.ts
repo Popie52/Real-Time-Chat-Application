@@ -6,6 +6,7 @@ import { env } from "../config/env";
 import { ConversationModel } from "../models/conversation.model";
 import { createMessage } from "../services/message.service";
 import { Types } from "mongoose";
+import { ReadStateModel } from "../models/read-state.model";
 
 export interface SocketContext {
   userId: string;
@@ -13,6 +14,8 @@ export interface SocketContext {
 }
 
 export const createSocketServer = (server: http.Server) => {
+  const typingState = new Map<string, NodeJS.Timeout>();
+
   const io = new Server(server, {
     cors: {
       origin: true,
@@ -64,7 +67,7 @@ export const createSocketServer = (server: http.Server) => {
     );
 
     const conversations = await ConversationModel.find({
-      participantsIds: userId,
+      participantIds: userId,
     }).select("_id");
 
     for (const c of conversations) {
@@ -92,7 +95,94 @@ export const createSocketServer = (server: http.Server) => {
         });
       }
     );
+
+    socket.on(
+      "conversation:read",
+      async (payload: { conversationId: string; lastReadSequence: number }) => {
+        const { userId } = socket.data.auth;
+
+        const state = await ReadStateModel.findOneAndUpdate(
+          {
+            conversationId: new Types.ObjectId(payload.conversationId),
+            userId: new Types.ObjectId(userId),
+            lastReadSequence: { $lt: payload.lastReadSequence },
+          },
+          {
+            lastReadSequence: payload.lastReadSequence,
+          },
+          { upsert: true, new: true }
+        );
+
+        if (!state) return;
+
+        socket.to(payload.conversationId).emit("conversation:read:update", {
+          conversationId: payload.conversationId,
+          userId,
+          lastReadSequence: state.lastReadSequence,
+        });
+      }
+    );
+
+    socket.on("typing:start", (payload: { conversationId: string }) => {
+      const { userId } = socket.data.auth;
+      const key = `${payload.conversationId}:${userId}`;
+
+      if (!typingState.has(key)) {
+        socket.to(payload.conversationId).emit("typing:update", {
+          conversationId: payload.conversationId,
+          userId,
+          isTyping: true,
+        });
+      }
+
+      if (typingState.has(key)) {
+        clearTimeout(typingState.get(key)!);
+      }
+
+      const timeout = setTimeout(() => {
+        typingState.delete(key);
+        socket.to(payload.conversationId).emit("typing:update", {
+          conversationId: payload.conversationId,
+          userId,
+          isTyping: false,
+        });
+      }, 3000);
+
+      typingState.set(key, timeout);
+    });
+
+    socket.on("typing:stop", (payload: { conversationId: string }) => {
+      const { userId } = socket.data.auth;
+      const key = `${payload.conversationId}:${userId}`;
+
+      if (typingState.has(key)) {
+        clearTimeout(typingState.get(key)!);
+        typingState.delete(key);
+
+        socket.to(payload.conversationId).emit("typing:update", {
+          conversationId: payload.conversationId,
+          userId,
+          isTyping: false,
+        });
+      }
+    });
+
     socket.on("disconnect", () => {
+      const { userId } = socket.data.auth;
+
+      for (const [key, timeout] of typingState.entries()) {
+        if (key.endsWith(`:${userId}`)) {
+          clearTimeout(timeout);
+          typingState.delete(key);
+
+          const conversationId = key.split(":")[0];
+          socket.to(conversationId).emit("typing:update", {
+            conversationId,
+            userId,
+            isTyping: false,
+          });
+        }
+      }
       console.log(
         `Socket disconnected: user=${ctx.userId}, session=${ctx.sessionId}`
       );
