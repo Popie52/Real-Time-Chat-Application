@@ -3,6 +3,9 @@ import http from "http";
 import { verifyAccessToken } from "../utils/token";
 import { SessionModel } from "../models/session.model";
 import { env } from "../config/env";
+import { ConversationModel } from "../models/conversation.model";
+import { createMessage } from "../services/message.service";
+import { Types } from "mongoose";
 
 export interface SocketContext {
   userId: string;
@@ -52,13 +55,43 @@ export const createSocketServer = (server: http.Server) => {
     }
   });
 
-  io.on("connection", (socket) => {
+  io.on("connection", async (socket) => {
     const ctx = socket.data.auth as SocketContext;
+    const { userId } = ctx;
 
     console.log(
       `Socket connected: user=${ctx.userId}, session=${ctx.sessionId}`
     );
 
+    const conversations = await ConversationModel.find({
+      participantsIds: userId,
+    }).select("_id");
+
+    for (const c of conversations) {
+      socket.join(c._id.toString());
+    }
+
+    socket.on(
+      "message:send",
+      async (payload: { conversationId: string; content: string }) => {
+        const { userId } = socket.data.auth;
+
+        const message = await createMessage({
+          conversationId: new Types.ObjectId(payload.conversationId),
+          senderId: new Types.ObjectId(userId),
+          content: payload.content,
+        });
+
+        io.to(payload.conversationId).emit("message:new", {
+          id: message._id.toString(),
+          conversationId: message.conversationId.toString(),
+          senderId: message.senderId.toString(),
+          sequence: message.sequence,
+          content: message.content,
+          createdAt: message.createdAt.toISOString(),
+        });
+      }
+    );
     socket.on("disconnect", () => {
       console.log(
         `Socket disconnected: user=${ctx.userId}, session=${ctx.sessionId}`
